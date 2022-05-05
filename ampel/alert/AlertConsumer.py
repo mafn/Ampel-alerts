@@ -33,6 +33,7 @@ from ampel.alert.AlertConsumerMetrics import stat_alerts, stat_accepted, stat_ti
 from ampel.model.ingest.IngestDirective import IngestDirective
 from ampel.model.ingest.DualIngestDirective import DualIngestDirective
 from ampel.model.ingest.CompilerOptions import CompilerOptions
+from ampel.protocol.AmpelAlertProtocol import AmpelAlertProtocol
 
 
 class AlertConsumer(AbsEventUnit):
@@ -75,6 +76,8 @@ class AlertConsumer(AbsEventUnit):
 
 	updates_buffer_size: int = 500
 
+	#: Additional metadata to be added to the datapoints
+	extra: dict[str, Any] = {}
 
 	@classmethod
 	def from_process(cls, context: AmpelContext, process_name: str, override: None | dict = None):
@@ -99,6 +102,19 @@ class AlertConsumer(AbsEventUnit):
 
 		return cls(context=context, **args)
 
+	def run_post_init(self, logger: AmpelLogger) -> None:
+		"""
+		Method for inheriting classes to set up their stuff after the basic
+		AlertConsumer stuff is already set up
+		"""
+		...
+
+	def filter_accepted(self, alert: AmpelAlertProtocol) -> dict[str, Any]:
+		"""
+		Method for inheriting classes to add additional metadata to the
+		datapoints after they have been accepted by the filter
+		"""
+		return {}
 
 	def __init__(self, **kwargs) -> None:
 		"""
@@ -223,8 +239,6 @@ class AlertConsumer(AbsEventUnit):
 			base_flag = LogFlag.T0 | LogFlag.CORE | self.base_log_flag
 		)
 
-		self.alert_supplier.set_logger(logger)
-
 		if logger.verbose:
 			logger.log(VERBOSE, "Pre-run setup")
 
@@ -283,6 +297,11 @@ class AlertConsumer(AbsEventUnit):
 
 		# Builds set of stock ids for autocomplete, if needed
 		self._fbh.ready(logger, run_id)
+
+		# Run additional init function of child classes
+		self.run_post_init(logger)
+
+		self.alert_supplier.set_logger(logger)
 
 		# Process alerts
 		################
@@ -351,11 +370,12 @@ class AlertConsumer(AbsEventUnit):
 
 					stats["accepted"].inc()
 
+					extra_data = self.filter_accepted(alert)
 					try:
 						with stat_time.labels("ingest").time():
 							ing_hdlr.ingest(
 								alert.datapoints, filter_results, stock_id, alert.tag,
-								{'alert': alert.id}, alert.extra.get('stock') if alert.extra else None
+								{'alert': alert.id} | extra_data | self.extra, alert.extra.get('stock') if alert.extra else None
 							)
 					except (PyMongoError, AmpelLoggingError) as e:
 						print("%s: abording run() procedure" % e.__class__.__name__)
